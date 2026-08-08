@@ -1,5 +1,8 @@
 package me.lunaluna.find.fabric.widget;
 
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.widget.TextFieldWidget;
@@ -7,19 +10,27 @@ import net.minecraft.component.ComponentMap;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.ContainerComponent;
 import net.minecraft.component.type.ItemEnchantmentsComponent;
+import net.minecraft.component.type.LoreComponent;
 import net.minecraft.component.type.PotionContentsComponent;
 import net.minecraft.enchantment.Enchantment;
 import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.entry.RegistryEntry;
+import net.minecraft.screen.ScreenTexts;
 import net.minecraft.text.Text;
 import org.apache.logging.log4j.util.Strings;
 import org.jetbrains.annotations.Nullable;
 import org.lwjgl.glfw.GLFW;
 
+import java.time.Duration;
+import java.util.regex.Pattern;
+
 public class FindWidget extends TextFieldWidget {
 
+    private static Cache<String, Pattern> patternCache = CacheBuilder.newBuilder()
+        .expireAfterWrite(Duration.ofSeconds(30))
+        .build();
     public static String search = "";
 
     public FindWidget(int x, int y) {
@@ -29,8 +40,33 @@ public class FindWidget extends TextFieldWidget {
     }
 
     private boolean matchString(String string) {
-        String text = getText().toLowerCase();
+        return matchString(string, getText());
+    }
+
+    private boolean matchString(String string, String text) {
+        text = text.toLowerCase();
         string = string.toLowerCase();
+
+        if (text.startsWith("^")) {
+            return string.startsWith(text.substring(1)) || string.trim().startsWith(text.substring(1));
+        }
+
+        if (text.startsWith("re:")) {
+            try {
+                var regex = text.substring("re:".length());
+                var cached = patternCache.getIfPresent(regex);
+
+                if (cached != null) {
+                    return cached.matcher(text).matches();
+                }
+
+                var pattern = Pattern.compile(regex);
+                patternCache.put(regex, pattern);
+                return pattern.matcher(string).matches();
+            } catch (Exception e) {
+                return false;
+            }
+        }
 
         for (String token : text.split(" "))
             if (!string.contains(token))
@@ -52,6 +88,36 @@ public class FindWidget extends TextFieldWidget {
         ComponentMap components = stack.getComponents();
         if (components == null)
             return false;
+
+        if (components.contains(DataComponentTypes.CUSTOM_NAME)) {
+            var customName = components.getOrDefault(DataComponentTypes.CUSTOM_NAME, ScreenTexts.EMPTY).getString();
+
+            // Search only in name
+            if (text.startsWith("n:")) {
+                return customName != null && matchString(customName, text.substring(2));
+            }
+
+            if (customName != null && matchString(customName)) {
+                return true;
+            }
+        }
+
+        if (components.contains(DataComponentTypes.LORE)) {
+            var lore = components.getOrDefault(DataComponentTypes.LORE, LoreComponent.DEFAULT)
+                .lines()
+                .stream()
+                .map(Text::getString)
+                .map(String::toLowerCase);
+
+            // Search lore only
+            if (text.startsWith("l:")) {
+                return lore.anyMatch(line -> matchString(line, text.substring(2)));
+            }
+
+            /*if (lore.anyMatch(this::matchString)) {
+                return true;
+            }*/
+        }
 
         if (components.contains(DataComponentTypes.ENCHANTMENTS)) {
             ItemEnchantmentsComponent enchantments = components.get(DataComponentTypes.ENCHANTMENTS);
